@@ -18,7 +18,7 @@ public:
 
     void disable() { enabled = false; }
 
-    bool isActive() { return active; }
+    bool isActive() const { return active; }
 
     void stop() { active = false; }
 
@@ -27,11 +27,11 @@ public:
         time_t time = now();
         int second = elapsedSecsToday(time);
         int alertSecond = _hour * 60 * 60 + _minute * 60;
-        active = weekday(time) == _dayOfWeek &&
+        active = enabled && weekday(time) == _dayOfWeek &&
                  (alertSecond == second || (active && second > alertSecond && second < alertSecond + 15 * 60));
     }
 
-    String toString()
+    String toString() const
     {
         String result = String("Alarm ");
         result += "enabled: ";

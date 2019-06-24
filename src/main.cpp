@@ -7,8 +7,21 @@
 #include <PIR.h>
 #include <Timezone.h>
 #include <EEPROM.h>
+#include <ESP8266Ping.h>
 #include "RGBControl.hpp"
+#ifndef CI
 #include "credentials.h"
+#else
+const char *ssid = "";
+const char *wifi_password = "";
+const char *ota_password = "";
+const char *mqttServer = "";
+
+const char *BEDLIGHT_BASE_TOPIC = "";
+const char *NIGHTLIGHT_TOPIC = "";
+const char *ALARM_SET_TOPIC = "";
+const char *ALARM_STATE_TOPIC = "";
+#endif
 #include "lightsensor.hpp"
 #include "alarm.hpp"
 
@@ -64,9 +77,15 @@ enum State
 
 String lastTopic("None");
 
+void saveConfig()
+{
+  EEPROM.begin(sizeof(Config));
+  EEPROM.put(0, config);
+  EEPROM.end();
+}
+
 void callback(char *topic, byte *payload, unsigned int length)
 {
-  bool saveConfig = false;
   if (!strcmp(topic, NIGHTLIGHT_TOPIC))
   {
     char c[15];
@@ -82,17 +101,26 @@ void callback(char *topic, byte *payload, unsigned int length)
     config.nightColor.red = red << 2;
     config.nightColor.green = green << 2;
     config.nightColor.blue = blue << 2;
+    saveConfig();
 
     fader.fadeTo(config.nightColor, 0);
-    saveConfig = true;
   }
   else if (length > 6 && !strcmp(topic, ALARM_SET_TOPIC))
   {
     int hour = (payload[2] - '0') * 10 + payload[3] - '0';
     int minute = (payload[5] - '0') * 10 + payload[6] - '0';
-    config.alarm[0].setTime(payload[0] - '0', hour, minute);
-    config.alarm[0].enable();
-    saveConfig = true;
+    Alarm &a = config.alarm[payload[0] - '1'];
+    a.setTime(payload[0] - '0', hour, minute);
+    saveConfig();
+  }
+  else if (length >= 4 && !strcmp(topic, ALARM_STATE_TOPIC))
+  {
+    Alarm &a = config.alarm[payload[0] - '1'];
+    if (payload[3] == 'f')
+      a.disable();
+    else if (payload[3] == 'n')
+      a.enable();
+    saveConfig();
   }
   lastTopic = topic;
 }
@@ -126,13 +154,7 @@ void setup()
   WiFi.begin(ssid, wifi_password);
   WiFi.setAutoConnect(true);
   WiFi.setAutoReconnect(true);
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    digitalWrite(LED_BUILTIN, LOW);
-    delay(100);
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(100);
-  }
+
   ArduinoOTA.setPassword(ota_password);
   ArduinoOTA.begin();
 
@@ -164,6 +186,17 @@ void setup()
     out += minute();
     out += ":";
     out += second();
+    IPAddress remote_addr;
+    if (WiFi.hostByName(mqttServer, remote_addr)) {
+      boolean gotPing = Ping.ping(remote_addr);
+      out += "<br>Ping to MQTT server ";
+      out += remote_addr.toString();
+      out += ": ";
+      out += gotPing;
+    } else {
+      out += "Could not resolve ";
+      out += mqttServer;
+    }
     out += "</body></html>";
     server.send(200, "text/html", out);
   });
@@ -186,7 +219,7 @@ void setup()
       out += CONFIG_VERSION;
     }
     out += "<br>";
-    for (Alarm &a : config.alarm)
+    for (const Alarm &a : config.alarm)
     {
       out += a.toString();
       out += "<br>";
@@ -235,6 +268,7 @@ void mqttConnect()
   {
     client.subscribe(NIGHTLIGHT_TOPIC);
     client.subscribe(ALARM_SET_TOPIC);
+    client.subscribe(ALARM_STATE_TOPIC);
   }
 }
 
@@ -256,7 +290,8 @@ void transitionLight()
   state = TRANSITION_LIGHT;
 }
 
-void alarmState() {
+void alarmState()
+{
   switchToIdleTime = currentMillis + 1000L;
   state = ALARM_PULSE_ON;
 }
@@ -309,6 +344,11 @@ void loop()
       mqttConnect();
     server.handleClient();
     ntpClient.update();
+    digitalWrite(LED_BUILTIN, HIGH);
+  }
+  else
+  {
+    digitalWrite(LED_BUILTIN, LOW);
   }
   motion1.loop();
   motion2.loop();
