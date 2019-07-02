@@ -1,0 +1,47 @@
+[
+    {
+        "dow": 0,
+        "second": 20000,
+        "enabled": true
+    },
+    {
+        "dow": 1,
+        "second": 20000,
+        "enabled": true
+    },
+    {
+        "dow": 2,
+        "second": 20000,
+        "enabled": true
+    },
+    {
+        "dow": 3,
+        "second": 20000,
+        "enabled": true
+    },
+    {
+        "dow": 4,
+        "second": 20000,
+        "enabled": true
+    },
+    {
+        "dow": 5,
+        "second": 20000,
+        "enabled": true
+    },
+    {
+        "dow": 6,
+        "second": 20000,
+        "enabled": true
+    },
+    {
+        "dow": 7,
+        "second": 20000,
+        "enabled": true
+    },
+    {
+        "dow": 8,
+        "second": 20000,
+        "enabled": true
+    }
+]

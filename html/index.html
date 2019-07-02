@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre-exp.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/spectre.css/dist/spectre-icons.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.4.1/dist/jquery.min.js"></script>
+    <script src="/code.js"></script>
+    <title>NightLight</title>
+</head>
+
+<body>
+
+    <div class="container grid-xl">
+        <header class="navbar">
+            <section class="navbar-section">
+                <a href="/index.html" class="navbar-brand mr-2">NightLight</a>
+                <a href="/status.html" class="btn btn-link">Status</a>
+            </section>
+        </header>
+
+        <h1>Alarms</h1>
+        <form id="form" class="form-horizontal">
+        </form>
+    </div>
+
+    <script>
+        let weekday = new Array(7);
+        weekday[0] = "Sunday";
+        weekday[1] = "Monday";
+        weekday[2] = "Tuesday";
+        weekday[3] = "Wednesday";
+        weekday[4] = "Thursday";
+        weekday[5] = "Friday";
+        weekday[6] = "Saturday";
+        let settings;
+
+        function setState(idx, element) {
+            settings[idx].enabled = element.checked;
+            $.post("/set", JSON.stringify(settings));
+        }
+
+        function setTime(idx, element) {
+            let hour = parseInt(element.value[0]) * 10 + parseInt(element.value[1]);
+            let minute = parseInt(element.value[3]) * 10 + parseInt(element.value[4]);
+            settings[idx].second = hour * 60 * 60 + minute * 60;
+            $.post("/set", JSON.stringify(settings));
+        }
+
+        $.getJSON("/settings.json", data => {
+            settings = data;
+            let form = $('#form');
+            data.forEach((e, idx) => {
+                if (idx > 6) return;
+                let hour = Math.floor(e.second / 60 / 60);
+                if (hour < 10) hour = "0" + hour;
+                let minute = Math.floor(e.second / 60 % 60);
+                if (minute < 10) minute = "0" + minute;
+                form.append(html`
+                <div class="form-group">
+                    <div class="col-2">
+                        <label class="form-switch form-inline">
+                            <input type="checkbox" ${e.enabled ? "checked" : ""} onchange="setState(${idx}, this);">
+                            <i class="form-icon"></i> ${weekday[e.dow]}
+                        </label>
+                    </div>
+                    <div class="col-10">
+                        <label class="form-inline">
+                            <input class="form-input" type="time" value="${hour}:${minute}" onchange="setTime(${idx}, this);">
+                        </label>
+                    </div>
+                </div>
+                `);
+            });
+        });
+    </script>
+</body>
+
+</html>

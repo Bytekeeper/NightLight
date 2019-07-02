@@ -14,11 +14,22 @@ public:
         _minute = minute;
     }
 
+    int getAlarmSecond() const
+    {
+        return _hour * 60 * 60 + _minute * 60;
+    }
+
+    int dow() const { return _dayOfWeek; }
+
+    void dow(int i) { _dayOfWeek = i; }
+
     void enable() { enabled = true; }
 
     void disable() { enabled = false; }
 
     bool isActive() const { return active; }
+
+    bool isEnabled() const { return enabled; }
 
     void stop() { active = false; }
 

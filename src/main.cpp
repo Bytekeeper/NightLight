@@ -7,7 +7,10 @@
 #include <PIR.h>
 #include <Timezone.h>
 #include <EEPROM.h>
-#include <ESP8266Ping.h>
+#include <TinyTemplateEngine.h>
+#include <TinyTemplateEngineMemoryReader.h>
+#include <WString.h>
+#include <ArduinoJson.h>
 #include "RGBControl.hpp"
 #ifndef CI
 #include "credentials.h"
@@ -24,13 +27,14 @@ const char *ALARM_STATE_TOPIC = "";
 #endif
 #include "lightsensor.hpp"
 #include "alarm.hpp"
+#include "html.h"
 
 static const int CONFIG_VERSION = 1;
 static const uint8_t RED = D2;
 static const uint8_t GREEN = D5;
 static const uint8_t BLUE = D1;
-static const short DEFAULT_SPEED = 3;
-static const short ALARM_SPEED = 12;
+static const short SPEED_DEFAULT = 3;
+static const short SPEED_FAST = 12;
 static const RGB COLOR_OFF = {0, 0, 0};
 const long dayFrom = 9 * 60 * 60;
 const long dayUntil = 20 * 60 * 60;
@@ -55,6 +59,8 @@ RGBControl fader(RED, GREEN, BLUE);
 
 unsigned long currentMillis;
 unsigned long switchToIdleTime = 0;
+String lastTopic("None");
+unsigned long lastLit;
 
 struct Config
 {
@@ -74,8 +80,6 @@ enum State
   ALARM_PULSE_OFF,
   ALARM_PULSE_ON
 } state;
-
-String lastTopic("None");
 
 void saveConfig()
 {
@@ -125,6 +129,82 @@ void callback(char *topic, byte *payload, unsigned int length)
   lastTopic = topic;
 }
 
+void sendSensorData()
+{
+  StaticJsonDocument<300> doc;
+  auto motionA = doc.createNestedObject();
+  motionA["name"] = "Motion A";
+  motionA["value"] = motion1.getState();
+
+  auto motionB = doc.createNestedObject();
+  motionB["name"] = "Motion B";
+  motionB["value"] = motion2.getState();
+
+  auto brightness = doc.createNestedObject();
+  ;
+  brightness["name"] = "Brightness";
+  brightness["value"] = lightSens.getValue();
+
+  auto timeSens = doc.createNestedObject();
+  timeSens["name"] = "Time";
+  String time;
+  time += hour();
+  time += ":";
+  time += minute();
+  time += ":";
+  time += second();
+  timeSens["value"] = time;
+
+  auto faderSens = doc.createNestedObject();
+  faderSens["name"] = "Fader";
+  faderSens["value"] = fader.toString();
+
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+void sendStatusData(short storedVersion)
+{
+  DynamicJsonDocument doc(2048);
+
+  auto mqtt = doc.createNestedObject();
+  mqtt["name"] = "MQTT";
+  if (client.connected())
+    mqtt["value"] = "Connected";
+  else
+    mqtt["value"] = "Not connected";
+
+  auto configSrc = doc.createNestedObject();
+  configSrc["name"] = "Configuration";
+  if (storedVersion == CONFIG_VERSION)
+    configSrc["value"] = "Saved";
+  else
+    configSrc["value"] = "New";
+
+  for (const Alarm &a : config.alarm)
+  {
+    auto alarm = doc.createNestedObject();
+    alarm["name"] = "Alarm";
+    alarm["value"] = a.toString();
+  }
+
+  auto ltr = doc.createNestedObject();
+  ltr["name"] = "Last received topic";
+  ltr["value"] = lastTopic;
+
+  auto llt = doc.createNestedObject();
+  llt["name"] = "Room last lit";
+  String lls;
+  lls += (currentMillis - lastLit) / 1000;
+  lls += "s ago";
+  llt["value"] = lls;
+
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "text/html", out);
+}
+
 void setup()
 {
   state = IDLE;
@@ -148,9 +228,14 @@ void setup()
     config = tmp;
   }
   EEPROM.end();
+  int i = 0;
+  for (Alarm &a: config.alarm) {
+    a.dow(i);
+    i++;
+  }
 
   ntpClient.setUpdateInterval(600000);
-  WiFi.hostname("Bedlight2");
+  WiFi.hostname("NightLight");
   WiFi.begin(ssid, wifi_password);
   WiFi.setAutoConnect(true);
   WiFi.setAutoReconnect(true);
@@ -158,9 +243,51 @@ void setup()
   ArduinoOTA.setPassword(ota_password);
   ArduinoOTA.begin();
 
-  server.on("/", [] {
-    server.send(200, "text/html", "<html><body>TEST!</body></html>");
+  server.on("/status.html", [] {
+    server.send(200, "text/html", FPSTR(status_html));
   });
+
+  server.on("/", [] {
+    server.send(200, "text/html", FPSTR(index_html));
+  });
+
+  server.on("/set", [] {
+    StaticJsonDocument<800> doc;
+    deserializeJson(doc, server.arg("plain"));
+    int i = 0;
+    for (Alarm &a : config.alarm)
+    {
+      int second = doc[i]["second"];
+      a.setTime(doc[i]["dow"], second / 60 / 60, second / 60 % 60);
+      bool enabled = doc[i]["enabled"];
+      if (enabled)
+        a.enable();
+      else
+        a.disable();
+      i++;
+    }
+    saveConfig();
+    server.send(200);
+  });
+
+  server.on("/code.js", [] { server.send(200, "application/javascript", FPSTR(code_js)); });
+  server.on("/settings.json", [] {
+    StaticJsonDocument<800> doc;
+    for (Alarm &a : config.alarm)
+    {
+      auto e = doc.createNestedObject();
+      e["second"] = a.getAlarmSecond();
+      e["dow"] = a.dow();
+      e["enabled"] = a.isEnabled();
+    }
+
+    String out;
+    serializeJson(doc, out);
+
+    server.send(200, "application/json", out);
+  });
+  server.on("/sensors.json", sendSensorData);
+  server.on("/status.json", [storedVersion] { sendStatusData(storedVersion); });
 
   server.on("/toggle", [] {
     String out = "<html><body>";
@@ -170,74 +297,6 @@ void setup()
     digitalWrite(D1, HIGH);
     delay(500);
     digitalWrite(D1, LOW);
-  });
-
-  server.on("/live", [] {
-    String out = "<html><head><meta http-equiv=\"refresh\" content=\"1\"></head><body>";
-    out += "Motion detected: ";
-    out += motion1.getState();
-    out += "/";
-    out += motion2.getState();
-    out += "<br>A0:";
-    out += lightSens.getValue();
-    out += "<br>time:";
-    out += hour();
-    out += ":";
-    out += minute();
-    out += ":";
-    out += second();
-    IPAddress remote_addr;
-    if (WiFi.hostByName(mqttServer, remote_addr)) {
-      boolean gotPing = Ping.ping(remote_addr);
-      out += "<br>Ping to MQTT server ";
-      out += remote_addr.toString();
-      out += ": ";
-      out += gotPing;
-    } else {
-      out += "Could not resolve ";
-      out += mqttServer;
-    }
-    out += "</body></html>";
-    server.send(200, "text/html", out);
-  });
-
-  server.on("/status", [storedVersion] {
-    String out = "<html><head><body>";
-    if (client.connected())
-      out += "MQTT connected";
-    else
-      out += "MQTT <em>not</em> connected";
-    out += "<br>";
-    out += "Config was ";
-    if (storedVersion == CONFIG_VERSION)
-      out += "loaded from EEPROM";
-    else
-    {
-      out += "created from scratch, since stored version ";
-      out += storedVersion;
-      out += " does not match current version ";
-      out += CONFIG_VERSION;
-    }
-    out += "<br>";
-    for (const Alarm &a : config.alarm)
-    {
-      out += a.toString();
-      out += "<br>";
-    }
-    out += "last received topic: ";
-    out += lastTopic;
-    out += "<br>";
-    out += fader.toString();
-    out += "<br>time:";
-    out += hour();
-    out += ":";
-    out += minute();
-    out += ":";
-    out += second();
-    out += ", dow:";
-    out += weekday();
-    out += "</body></html>";
-    server.send(200, "text/html", out);
   });
 
   server.begin();
@@ -299,13 +358,13 @@ void alarmState()
 void onMotion()
 {
   long secsToday = elapsedSecsToday(now());
-  if (secsToday > nightFrom || secsToday < nightUntil)
-  {
-    nightLight();
-  }
-  else if (secsToday < dayFrom || secsToday > dayUntil)
+  if (secsToday < dayFrom || secsToday > dayUntil || currentMillis - lastLit < 1000)
   {
     transitionLight();
+  }
+  else if (secsToday > nightFrom || secsToday < nightUntil)
+  {
+    nightLight();
   }
   else if (lightSens.getValue() < 20)
   {
@@ -361,6 +420,8 @@ void loop()
   bool motionDetected = motion1.getState() || motion2.getState();
   bool alarmActive = checkForAlarm(motionDetected);
   bool environmentIsLit = fader.isDark() && lightSens.getValue() > 30;
+  if (environmentIsLit)
+    lastLit = currentMillis;
 
   if (currentMillis >= switchToIdleTime)
     state = IDLE;
@@ -368,28 +429,28 @@ void loop()
   switch (state)
   {
   case IDLE:
-    fader.fadeTo(COLOR_OFF, DEFAULT_SPEED);
+    fader.fadeTo(COLOR_OFF, SPEED_DEFAULT);
     if (motionDetected && !environmentIsLit)
       onMotion();
     if (alarmActive)
       alarmState();
     break;
   case NIGHT_LIGHT:
-    fader.fadeTo(config.nightColor, DEFAULT_SPEED);
+    fader.fadeTo(config.nightColor, SPEED_DEFAULT);
     if (motionDetected)
       onMotion();
     if (alarmActive)
       alarmState();
     break;
   case TRANSITION_LIGHT:
-    fader.fadeTo(config.transitionColor, DEFAULT_SPEED);
+    fader.fadeTo(config.transitionColor, SPEED_FAST);
     if (motionDetected)
       onMotion();
     if (alarmActive)
       alarmState();
     break;
   case DARK_LIGHT:
-    fader.fadeTo(config.transitionColor, DEFAULT_SPEED);
+    fader.fadeTo(config.transitionColor, SPEED_DEFAULT);
     if (motionDetected)
       darkLight();
     if (alarmActive)
@@ -397,7 +458,7 @@ void loop()
     break;
   case ALARM_PULSE_OFF:
     switchToIdleTime = currentMillis + 1000L;
-    fader.fadeTo(COLOR_OFF, ALARM_SPEED);
+    fader.fadeTo(COLOR_OFF, SPEED_FAST);
     if (fader.reachedTargetColor())
       state = ALARM_PULSE_ON;
     if (!alarmActive)
@@ -405,7 +466,7 @@ void loop()
     break;
   case ALARM_PULSE_ON:
     switchToIdleTime = currentMillis + 1000L;
-    fader.fadeTo(config.alarmColor, ALARM_SPEED);
+    fader.fadeTo(config.alarmColor, SPEED_FAST);
     if (fader.reachedTargetColor())
       state = ALARM_PULSE_OFF;
     if (!alarmActive)
@@ -414,5 +475,4 @@ void loop()
   }
 
   fader.loop();
-  delay(0);
 }
